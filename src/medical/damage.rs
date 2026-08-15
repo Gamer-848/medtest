@@ -2,18 +2,15 @@
 use bevy::prelude::*;
 use rand::RngExt;
 use super::limb::*;
-
-// ── ТИПЫ УРОНА ──────────────────────────────────────────────
+use super::organ::Organ;  // ← добавили
 
 pub enum DamageComponent {
-    // Физический
-    Blunt(u16),    // тупой — кулак, падение, приклад
-    Slashing(u16), // режущий — лезвие, коготь
-    Piercing(u16), // колющий — пуля, стрела, игла
-    // Химический/температурный
-    Burn(u16),     // ожог — огонь, плазма
-    Acid(u16),     // кислота — химическое разъедание
-    Frost(u16),    // обморожение — холод, крио
+    Blunt(u16),
+    Slashing(u16),
+    Piercing(u16),
+    Burn(u16),
+    Acid(u16),
+    Frost(u16),
 }
 
 pub struct DamageHit {
@@ -28,7 +25,6 @@ impl DamageHit {
         self
     }
 
-    // Удобные конструкторы для типичных случаев
     pub fn punch(val: u16)  -> Self { Self::new().with(DamageComponent::Blunt(val)) }
     pub fn slash(val: u16)  -> Self { Self::new().with(DamageComponent::Slashing(val)) }
     pub fn bullet(val: u16) -> Self {
@@ -43,8 +39,6 @@ impl DamageHit {
     }
 }
 
-// ── КОНТЕКСТ КОНЕЧНОСТИ ─────────────────────────────────────
-
 pub struct LimbContext<'a> {
     pub entity:  Entity,
     pub limb:    &'a Limb,
@@ -54,35 +48,28 @@ pub struct LimbContext<'a> {
     pub bleed:   Option<&'a mut Bleeding>,
     pub frost:   Option<&'a mut Frostbite>,
     pub burn:    Option<&'a mut BurnDamage>,
-    pub organ:   Option<&'a mut OrganDamage>,
+    pub organ:   Option<&'a mut Organ>,  // ← было OrganDamage
 }
-
-// ── ОСНОВНАЯ ФУНКЦИЯ ────────────────────────────────────────
 
 pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHit) {
     let mut rng = rand::rng();
 
-    // Читаем состояние конечности до любых изменений
-    let skin_total    = ctx.skin.as_ref().map(|s| s.total()).unwrap_or(0);
-    let muscle_total  = ctx.muscle.as_ref().map(|m| m.total()).unwrap_or(0);
-    let bone_damage   = ctx.bone.as_ref().map(|b| b.0).unwrap_or(0);
-    let frost_sev     = ctx.frost.as_ref().map(|f| f.severity).unwrap_or(0);
-    let skin_gone     = skin_total   >= ctx.limb.skin_max;
-    let muscle_gone   = muscle_total >= ctx.limb.muscle_max;
-    let bone_fraction = bone_damage;  // 0-100
+    let skin_total   = ctx.skin.as_ref().map(|s| s.total()).unwrap_or(0);
+    let muscle_total = ctx.muscle.as_ref().map(|m| m.total()).unwrap_or(0);
+    let bone_damage  = ctx.bone.as_ref().map(|b| b.0).unwrap_or(0);
+    let frost_sev    = ctx.frost.as_ref().map(|f| f.severity).unwrap_or(0);
+    let skin_gone    = skin_total   >= ctx.limb.skin_max;
+    let bone_fraction = bone_damage;
 
-    // Дельты по слоям и типам
     let mut skin_slash:   u16 = 0;
     let mut skin_burn:    u16 = 0;
     let mut skin_acid:    u16 = 0;
     let mut skin_frost:   u16 = 0;
-
     let mut muscle_blunt:  u16 = 0;
     let mut muscle_slash:  u16 = 0;
     let mut muscle_pierce: u16 = 0;
     let mut muscle_burn:   u16 = 0;
     let mut muscle_frost:  u16 = 0;
-
     let mut bone_delta:  u8  = 0;
     let mut bleed_delta: u16 = 0;
 
@@ -90,12 +77,9 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
         match component {
 
             DamageComponent::Blunt(val) => {
-                // Тупой — прямо в мышцы, кожа не задета
-                // если кожа уничтожена — чуть больше урона мышцам
                 let bonus = if skin_gone { *val / 5 } else { 0 };
                 muscle_blunt += val + bonus;
 
-                // Перелом — зависит от заполненности мышц и обморожения
                 let muscle_buffer  = ctx.limb.muscle_max.saturating_sub(muscle_total);
                 let bone_threshold = if frost_sev > 50 { 1500u16 } else { 3000u16 };
                 if *val > bone_threshold && (*val > muscle_buffer || frost_sev > 50) {
@@ -105,27 +89,19 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
             }
 
             DamageComponent::Slashing(val) => {
-                // Распределение по глубине
-                let to_skin = if *val < 500 {
-                    *val
-                } else {
-                    500 + (*val - 500) / 4
-                };
+                let to_skin = if *val < 500 { *val } else { 500 + (*val - 500) / 4 };
                 let to_muscle = val.saturating_sub(to_skin);
 
-                // Если кожа уничтожена — весь урон идёт в мышцы
                 if skin_gone {
                     muscle_slash += val;
                 } else {
                     skin_slash   += to_skin;
                     muscle_slash += to_muscle;
                 }
-
                 bleed_delta += val / 8;
             }
 
             DamageComponent::Piercing(val) => {
-                // Минимальный след на коже и мышцах
                 if skin_gone {
                     muscle_pierce += val / 3;
                 } else {
@@ -134,30 +110,25 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
                 }
                 bleed_delta += val / 12;
 
-                // Шанс задеть кость — выше при обморожении
                 let bone_chance = if frost_sev > 50 { 30u32 } else { 10u32 };
                 if *val > 500 && rng.random_range(0..100u32) < bone_chance {
                     bone_delta = bone_delta.saturating_add((*val / 200).min(30) as u8);
                     println!("BONE_PIERCED");
                 }
 
-                // Шанс задеть орган — выше если кость уже сломана
                 if let Some(ref mut organ) = ctx.organ {
                     let organ_chance: u32 = if bone_fraction >= 50 { 60 } else { 20 };
                     if rng.random_range(0..100u32) < organ_chance {
                         let organ_dmg = if bone_fraction >= 50 { val / 2 } else { val / 5 };
-                        organ.damage = organ.damage
-                            .saturating_add(organ_dmg)
-                            .min(organ.max_damage);
+                        organ.add_damage(organ_dmg);  // ← используем метод из Organ
                         println!("ORGAN_PIERCED: -{}", organ_dmg);
                     }
                 }
             }
 
             DamageComponent::Burn(val) => {
-                if skin_gone {
-                    muscle_burn += val;
-                } else {
+                if skin_gone { muscle_burn += val; }
+                else {
                     skin_burn += val;
                     if *val > 1000 { muscle_burn += val / 3; }
                 }
@@ -171,11 +142,8 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
             }
 
             DamageComponent::Acid(val) => {
-                if skin_gone {
-                    muscle_slash += val; // кислота жрёт мышцы как порезы
-                } else {
-                    skin_acid += val;
-                }
+                if skin_gone { muscle_slash += val; }
+                else { skin_acid += val; }
 
                 if *val > 3000 {
                     bone_delta = bone_delta.saturating_add(40);
@@ -184,11 +152,8 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
             }
 
             DamageComponent::Frost(val) => {
-                if skin_gone {
-                    muscle_frost += val / 2;
-                } else {
-                    skin_frost += val / 2;
-                }
+                if skin_gone { muscle_frost += val / 2; }
+                else { skin_frost += val / 2; }
 
                 let sev_gain = (*val / 50).min(100) as u8;
                 if let Some(ref mut frost) = ctx.frost {
@@ -202,9 +167,6 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
         }
     }
 
-    // ── ПРИМЕНЯЕМ ДЕЛЬТЫ ────────────────────────────────────
-
-    // Кожа
     let any_skin = skin_slash > 0 || skin_burn > 0 || skin_acid > 0 || skin_frost > 0;
     if any_skin {
         if let Some(skin) = ctx.skin {
@@ -222,7 +184,6 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
         }
     }
 
-    // Мышцы
     let any_muscle = muscle_blunt > 0 || muscle_slash > 0 || muscle_pierce > 0
                   || muscle_burn  > 0 || muscle_frost > 0;
     if any_muscle {
@@ -243,7 +204,6 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
         }
     }
 
-    // Кость
     if bone_delta > 0 {
         if let Some(bone) = ctx.bone {
             bone.add_damage(bone_delta);
@@ -255,7 +215,6 @@ pub fn apply_damage(commands: &mut Commands, mut ctx: LimbContext, hit: DamageHi
         }
     }
 
-    // Кровотечение
     if bleed_delta > 0 {
         if let Some(bleed) = ctx.bleed {
             bleed.0 = bleed.0.saturating_add(bleed_delta);

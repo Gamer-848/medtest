@@ -1,94 +1,83 @@
 // body.rs
 use bevy::prelude::*;
-use super::limb::{Limb, OrganDamage};
+use super::limb::{Limb, LimbKind, Side, Infectable};
+use super::organ::{Organ, OrganType, Heart};
 
 #[derive(Component, Debug)]
 pub struct Body {
-    pub name:         String,
-    pub is_alive:     bool,
-    pub blood_volume: u16,   // норма 5000 мл
-    pub oxygen_level: u8,    // норма 100%
-    pub radiation:    u16,
+    pub name:           String,
+    pub is_alive:       bool,
+    pub blood_volume:   u16,
+    pub viscosity:      u8,
+    pub blood_pressure: u8,
+    pub spo2:           u8,
+    pub hypoxia:        u8,
+    pub body_temp:      u8,
+    pub o2_debt:        u8,
+    pub radiation:      u16,
 }
 
 impl Body {
-    // Конструктор спавнит минимальное тело — торакс и абдомен
-    // всё остальное добавляется отдельно
     pub fn spawn(commands: &mut Commands, name: &str) -> Entity {
-        commands.spawn((
-            Body {
-                name:         name.to_string(),
-                is_alive:     true,
-                blood_volume: 5000,
-                oxygen_level: 100,
-                radiation:    0,
-            },
-        )).with_children(|parent| {
-            // Торакс — всегда есть, содержит сердце
-            parent.spawn(Limb::thorax()).with_children(|thorax| {
-                thorax.spawn(OrganDamage {
-                    name:       "Сердце".to_string(),
-                    damage:     0,
-                    max_damage: 40000,
-                    is_heart:   true,
-                });
-                thorax.spawn(OrganDamage {
-                    name:       "Лёгкие".to_string(),
-                    damage:     0,
-                    max_damage: 30000,
-                    is_heart:   false,
-                });
+        commands.spawn(Body {
+            name:           name.to_string(),
+            is_alive:       true,
+            blood_volume:   5000,
+            viscosity:      100,
+            blood_pressure: 100,
+            spo2:           98,
+            hypoxia:        0,
+            body_temp:      37,
+            o2_debt:        0,
+            radiation:      0,
+        }).with_children(|body| {
+            // Торакс и абдомен — всегда Infectable
+            body.spawn((Limb::new(LimbKind::Thorax), Infectable)).with_children(|thorax| {
+                thorax.spawn(Organ::new(OrganType::Heart));
+                thorax.spawn(Organ::new(OrganType::Lungs));
+                thorax.spawn(Heart::human());
             });
-
-            // Абдомен — всегда есть
-            parent.spawn(Limb::abdomen()).with_children(|abdomen| {
-                abdomen.spawn(OrganDamage {
-                    name:       "Печень".to_string(),
-                    damage:     0,
-                    max_damage: 25000,
-                    is_heart:   false,
-                });
+            body.spawn((Limb::new(LimbKind::Abdomen), Infectable)).with_children(|abdomen| {
+                abdomen.spawn(Organ::new(OrganType::Liver));
+                abdomen.spawn(Organ::new(OrganType::Stomach));
+                abdomen.spawn(Organ::new(OrganType::Spleen));
             });
         }).id()
     }
 
-    // Добавить голову после спавна
-    pub fn attach_head(commands: &mut Commands, body_entity: Entity) -> Entity {
-        let head = commands.spawn(Limb::head()).id();
-        commands.entity(body_entity).add_child(head);
+    pub fn attach_head(commands: &mut Commands, body: Entity) -> Entity {
+        let head = commands.spawn((Limb::new(LimbKind::Head), Infectable))
+            .with_children(|h| { h.spawn(Organ::new(OrganType::Brain)); })
+            .id();
+        commands.entity(body).add_child(head);
         head
     }
 
-    // Добавить руку
-    pub fn attach_arm(commands: &mut Commands, body_entity: Entity, is_left: bool) -> Entity {
-        use super::limb::{LimbType};
-
-        let mut shoulder = Limb::shoulder();
-        let mut forearm  = Limb { limb_type: if is_left { LimbType::LeftForearm  } else { LimbType::RightForearm  }, ..Limb::shoulder() };
-        let mut hand     = Limb { limb_type: if is_left { LimbType::LeftHand     } else { LimbType::RightHand     }, ..Limb::shoulder() };
-        shoulder.limb_type = if is_left { LimbType::LeftShoulder } else { LimbType::RightShoulder };
-
-        let hand_e     = commands.spawn(hand).id();
-        let forearm_e  = commands.spawn(forearm).add_child(hand_e).id();
-        let shoulder_e = commands.spawn(shoulder).add_child(forearm_e).id();
-
-        commands.entity(body_entity).add_child(shoulder_e);
-        shoulder_e
+    pub fn attach_arm(commands: &mut Commands, body: Entity, side: Side) -> Entity {
+        let hand     = commands.spawn((Limb::new(LimbKind::Hand(side)),     Infectable)).id();
+        let forearm  = commands.spawn((Limb::new(LimbKind::Forearm(side)),  Infectable)).add_child(hand).id();
+        let shoulder = commands.spawn((Limb::new(LimbKind::Shoulder(side)), Infectable)).add_child(forearm).id();
+        commands.entity(body).add_child(shoulder);
+        shoulder
     }
 
-    // Добавить ногу
-    pub fn attach_leg(commands: &mut Commands, body_entity: Entity, is_left: bool) -> Entity {
-        use super::limb::LimbType;
+    pub fn attach_leg(commands: &mut Commands, body: Entity, side: Side) -> Entity {
+        let foot  = commands.spawn((Limb::new(LimbKind::Foot(side)),  Infectable)).id();
+        let crus  = commands.spawn((Limb::new(LimbKind::Crus(side)),  Infectable)).add_child(foot).id();
+        let thigh = commands.spawn((Limb::new(LimbKind::Thigh(side)), Infectable)).add_child(crus).id();
+        commands.entity(body).add_child(thigh);
+        thigh
+    }
+}
 
-        let thigh_type = if is_left { LimbType::LeftThigh } else { LimbType::RightThigh };
-        let crus_type  = if is_left { LimbType::LeftCrus  } else { LimbType::RightCrus  };
-        let foot_type  = if is_left { LimbType::LeftFoot  } else { LimbType::RightFoot  };
+#[derive(Component, Debug)]
+pub struct InternalBleeding { pub rate: u16, pub volume: u16 }
 
-        let foot_e  = commands.spawn(Limb { limb_type: foot_type,  ..Limb::thigh() }).id();
-        let crus_e  = commands.spawn(Limb { limb_type: crus_type,  ..Limb::thigh() }).add_child(foot_e).id();
-        let thigh_e = commands.spawn(Limb { limb_type: thigh_type, ..Limb::thigh() }).add_child(crus_e).id();
+#[derive(Component, Debug)]
+pub struct Hemothorax { pub volume: u16 }
 
-        commands.entity(body_entity).add_child(thigh_e);
-        thigh_e
+impl Hemothorax {
+    pub fn lung_compression(&self) -> u8 {
+        ((self.volume as u32 * 100 / 1500).min(100)) as u8
     }
 }
