@@ -286,9 +286,9 @@ pub fn internal_bleeding_system(
 
 // ── ИНФЕКЦИЯ ────────────────────────────────────────────────
 
-fn collect_infected_recursive(
+fn collect_all_infected(
     children:  &Children,
-    inf_query: &Query<(Entity, &Limb, &Infection)>,
+    inf_query: &Query<(Entity, &Limb, &mut Infection)>,
     ch_query:  &Query<&Children>,
     result:    &mut Vec<Entity>,
 ) {
@@ -297,7 +297,7 @@ fn collect_infected_recursive(
             result.push(child);
         }
         if let Ok(grandchildren) = ch_query.get(child) {
-            collect_infected_recursive(grandchildren, inf_query, ch_query, result);
+            collect_all_infected(grandchildren, inf_query, ch_query, result);
         }
     }
 }
@@ -306,7 +306,7 @@ pub fn infection_system(
     mut commands:   Commands,
     body_query:     Query<(&Body, &Children)>,
     mut inf_query:  Query<(Entity, &Limb, &mut Infection)>,
-    inf_read:       Query<(Entity, &Limb, &Infection)>,
+    // убираем inf_read совсем
     infectable_q:   Query<&Infectable>,
     parent_query:   Query<&ChildOf>,
     children_query: Query<&Children>,
@@ -315,48 +315,47 @@ pub fn infection_system(
     for (body, body_children) in body_query.iter() {
         if !body.is_alive { continue; }
 
-        // Собираем все заражённые конечности через немутабельный query
+        // Собираем entity всех заражённых
         let mut all_infected: Vec<Entity> = Vec::new();
-        collect_infected_recursive(body_children, &inf_read, &children_query, &mut all_infected);
+        collect_all_infected(body_children, &inf_query, &children_query, &mut all_infected);
 
+        // Собираем данные для распространения — отдельным проходом
         let mut spread_to: Vec<(Entity, u16)> = Vec::new();
+        let mut severities: Vec<(Entity, u16)> = Vec::new();
 
         for entity in &all_infected {
-            if let Ok((_, _, inf)) = inf_read.get(*entity) {
+            if let Ok((_, _, inf)) = inf_query.get(*entity) {
+                severities.push((*entity, inf.severity));
                 if inf.severity >= INF_SPREAD {
-                    // Вверх — на родителя
-                    if let Ok(parent_of) = parent_query.get(*entity) {
-                        let parent = parent_of.parent();
-                        if infectable_q.get(parent).is_ok()
-                            && inf_read.get(parent).is_err()
-                        {
+                    // Вверх
+                    if let Ok(p) = parent_query.get(*entity) {
+                        let parent = p.parent();
+                        if infectable_q.get(parent).is_ok() && inf_query.get(parent).is_err() {
                             spread_to.push((parent, inf.severity / 2));
                         }
                     }
-
-                    // Вниз — на дочерние конечности
-                    if let Ok(children) = children_query.get(*entity) {
-                        for child in children.iter() {
+                    // Вниз
+                    if let Ok(ch) = children_query.get(*entity) {
+                        for child in ch.iter() {
                             if limb_check.get(child).is_ok()
                                 && infectable_q.get(child).is_ok()
-                                && inf_read.get(child).is_err()
+                                && inf_query.get(child).is_err()
                             {
                                 spread_to.push((child, inf.severity / 3));
                             }
                         }
                     }
-
-                    // На соседей через общего родителя
-                    if let Ok(parent_of) = parent_query.get(*entity) {
-                        let parent = parent_of.parent();
+                    // Соседи
+                    if let Ok(p) = parent_query.get(*entity) {
+                        let parent = p.parent();
                         if let Ok(siblings) = children_query.get(parent) {
-                            for sibling in siblings.iter() {
-                                if sibling == *entity { continue; }
-                                if limb_check.get(sibling).is_ok()
-                                    && infectable_q.get(sibling).is_ok()
-                                    && inf_read.get(sibling).is_err()
+                            for sib in siblings.iter() {
+                                if sib == *entity { continue; }
+                                if limb_check.get(sib).is_ok()
+                                    && infectable_q.get(sib).is_ok()
+                                    && inf_query.get(sib).is_err()
                                 {
-                                    spread_to.push((sibling, inf.severity / 4));
+                                    spread_to.push((sib, inf.severity / 4));
                                 }
                             }
                         }
@@ -365,7 +364,7 @@ pub fn infection_system(
             }
         }
 
-        // Обновляем severity
+        // Теперь мутируем
         for entity in &all_infected {
             if let Ok((_, limb, mut inf)) = inf_query.get_mut(*entity) {
                 inf.severity = inf.severity.saturating_add(200).min(INF_GANGRENE);
@@ -377,7 +376,6 @@ pub fn infection_system(
             }
         }
 
-        // Заражаем новые конечности
         for (target, severity) in spread_to {
             commands.entity(target).insert(Infection { severity });
             if let Ok(limb) = limb_check.get(target) {
@@ -413,15 +411,9 @@ pub fn regen_system(
         let spo2_factor    = body.spo2 as u32 * 100 / 98;
         let blood_factor   = (body.blood_volume as u32 * 100 / 5000).min(100);
         let hypoxia_factor = 100u32.saturating_sub(body.hypoxia as u32);
-        let temp_factor    = match body.body_temp {
-            t if t < 35 => 50u32,
-            35           => 70,
-            36           => 90,
-            37           => 100,
-            38           => 90,
-            39           => 80,
-            _            => 60,
-        };
+       let temp = body.body_temp as i32;
+let delta = temp - 37;  // отклонение от нормы
+let temp_factor = (100i32 - delta * delta * 5).max(0) as u32;;
 
         let regen_rate = heart_eff
             * spo2_factor    / 100
